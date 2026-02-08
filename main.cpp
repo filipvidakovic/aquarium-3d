@@ -15,8 +15,14 @@
 #include "shader.hpp"
 #include "model.hpp"
 
-const unsigned int wWidth = 1200;
-const unsigned int wHeight = 900;
+const unsigned int wWidth = 1920;
+const unsigned int wHeight = 1080;
+
+const double TARGET_FPS = 75.0;
+const double FRAME_TIME = 1.0 / TARGET_FPS;
+
+bool depthTestEnabled = true;
+bool cullFaceEnabled = true;
 
 bool chestOpen = false;
 float chest_lid_angle = 0.0f;
@@ -50,7 +56,7 @@ void keyCallback(GLFWwindow* window, int key, int, int action, int)
     if (key == GLFW_KEY_R && action == GLFW_PRESS) {
         Bubble b;
         b.pos = fish1Pos;
-        b.speed = 0.0007f;
+        b.speed = 0.007f;
         b.radius = 0.025f;
         bubbles.push_back(b);
     }
@@ -58,9 +64,33 @@ void keyCallback(GLFWwindow* window, int key, int, int action, int)
     if (key == GLFW_KEY_T && action == GLFW_PRESS) {
         Bubble b;
         b.pos = fish2Pos;
-        b.speed = 0.0007f;
+        b.speed = 0.007f;
         b.radius = 0.025f;
         bubbles.push_back(b);
+    }
+
+    if (key == GLFW_KEY_Z && action == GLFW_PRESS) {
+        depthTestEnabled = !depthTestEnabled;
+        if (depthTestEnabled) {
+            glEnable(GL_DEPTH_TEST);
+            std::cout << "Depth test: ON\n";
+        }
+        else {
+            glDisable(GL_DEPTH_TEST);
+            std::cout << "Depth test: OFF\n";
+        }
+    }
+
+    if (key == GLFW_KEY_X && action == GLFW_PRESS) {
+        cullFaceEnabled = !cullFaceEnabled;
+        if (cullFaceEnabled) {
+            glEnable(GL_CULL_FACE);
+            std::cout << "Face culling: ON\n";
+        }
+        else {
+            glDisable(GL_CULL_FACE);
+            std::cout << "Face culling: OFF\n";
+        }
     }
 }
 
@@ -135,14 +165,43 @@ unsigned int createPlane() {
     return VAO;
 }
 
+unsigned int createQuad() {
+    float vertices[] = {
+        -1.0f,  1.0f,    0.0f, 0.0f,
+        -1.0f,  0.5f,    0.0f, 1.0f,
+        -0.7f,  0.5f,    1.0f, 1.0f,
+        -0.7f,  1.0f,    1.0f, 0.0f 
+    };
+    unsigned int indices[] = { 0,1,2, 2,3,0 };
+    unsigned int VAO, VBO, EBO;
+    glGenVertexArrays(1, &VAO);
+    glGenBuffers(1, &VBO);
+    glGenBuffers(1, &EBO);
+    glBindVertexArray(VAO);
+    glBindBuffer(GL_ARRAY_BUFFER, VBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+    glBindVertexArray(0);
+    return VAO;
+}
+
 int main()
 {
     if (!glfwInit()) return -1;
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    GLFWwindow* window = glfwCreateWindow(wWidth, wHeight, "3D Aquarium", nullptr, nullptr);
+
+    GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+    const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+    GLFWwindow* window = glfwCreateWindow(mode->width, mode->height, "3D Aquarium - Fullscreen", monitor, nullptr);
     if (!window) return -2;
+
     glfwMakeContextCurrent(window);
     glfwSetKeyCallback(window, keyCallback);
     if (glewInit() != GLEW_OK) return -3;
@@ -153,18 +212,55 @@ int main()
 
     Model clown("res/clown-fish.obj");
     Model puffer("res/puffer-fish.obj");
+    Model grass("res/grass.obj");
+    Model pineapple("res/pineapple.obj");
+
     unsigned int cubeVAO = createCube();
     unsigned int sphereVAO = createSphere(1.0f, 20, 20);
     unsigned int planeVAO = createPlane();
+    unsigned int quadVAO = createQuad();
 
-    // Create textures
     unsigned int sandTexture = createSandTexture();
     unsigned int woodTexture = createWoodTexture();
+    unsigned int signatureTexture = loadTexture("res/signature-cyrillic.png");
 
     Shader shader("basic.vert", "basic.frag");
     shader.use();
 
-    // IMPORTANT: Better light position and brighter lighting
+    const char* overlayVertSrc = R"(
+        #version 330 core
+        layout(location=0) in vec2 aPos;
+        layout(location=1) in vec2 aTexCoord;
+        out vec2 TexCoord;
+        void main() {
+            gl_Position = vec4(aPos, 0.0, 1.0);
+            TexCoord = aTexCoord;
+        }
+    )";
+    const char* overlayFragSrc = R"(
+        #version 330 core
+        in vec2 TexCoord;
+        out vec4 FragColor;
+        uniform sampler2D uTexture;
+        void main() {
+            vec4 texColor = texture(uTexture, TexCoord);
+            FragColor = vec4(texColor.rgb, texColor.a * 0.7);
+        }
+    )";
+
+    unsigned int overlayVert = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(overlayVert, 1, &overlayVertSrc, nullptr);
+    glCompileShader(overlayVert);
+    unsigned int overlayFrag = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(overlayFrag, 1, &overlayFragSrc, nullptr);
+    glCompileShader(overlayFrag);
+    unsigned int overlayShader = glCreateProgram();
+    glAttachShader(overlayShader, overlayVert);
+    glAttachShader(overlayShader, overlayFrag);
+    glLinkProgram(overlayShader);
+    glDeleteShader(overlayVert);
+    glDeleteShader(overlayFrag);
+
     shader.setVec3("uLightPos", 0.0f, 3.0f, 2.0f);
     shader.setVec3("uViewPos", 0.0f, 0.5f, 4.0f);
     shader.setVec3("uLightColor", 1.2f, 1.2f, 1.1f);
@@ -180,32 +276,40 @@ int main()
         algaePositions.emplace_back(x, -0.9f, z);
     }
 
-
     std::cout << "=== Controls ===\n";
     std::cout << "WASD - Fish 1 | Arrows - Fish 2\n";
     std::cout << "C - Chest | F - Food | ESC - Exit\n\n";
 
     int frameCounter = 0;
+    double lastTime = glfwGetTime();
 
     while (!glfwWindowShouldClose(window))
     {
+        double currentTime = glfwGetTime();
+        double deltaTime = currentTime - lastTime;
+
+        if (deltaTime < FRAME_TIME) {
+            continue;
+        }
+        lastTime = currentTime;
+
         if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) glfwSetWindowShouldClose(window, true);
 
         fish1PrevPos = fish1Pos;
         fish2PrevPos = fish2Pos;
 
-        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) fish1Pos.z -= 0.0007f;
-        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) fish1Pos.z += 0.0007f;
-        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) fish1Pos.x -= 0.0007f;
-        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) fish1Pos.x += 0.0007f;
-        if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) fish1Pos.y += 0.0007f;
-        if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) fish1Pos.y -= 0.0007f;
-        if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS) fish2Pos.z -= 0.0007f;
-        if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS) fish2Pos.z += 0.0007f;
-        if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS) fish2Pos.x -= 0.0007f;
-        if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) fish2Pos.x += 0.0007f;
-        if (glfwGetKey(window, GLFW_KEY_K) == GLFW_PRESS) fish2Pos.y += 0.0007f;
-        if (glfwGetKey(window, GLFW_KEY_L) == GLFW_PRESS) fish2Pos.y -= 0.0007f;
+        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) fish1Pos.z -= 0.007f;
+        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) fish1Pos.z += 0.007f;
+        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) fish1Pos.x -= 0.007f;
+        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) fish1Pos.x += 0.007f;
+        if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) fish1Pos.y += 0.007f;
+        if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) fish1Pos.y -= 0.007f;
+        if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS) fish2Pos.z -= 0.007f;
+        if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS) fish2Pos.z += 0.007f;
+        if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS) fish2Pos.x -= 0.007f;
+        if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) fish2Pos.x += 0.007f;
+        if (glfwGetKey(window, GLFW_KEY_K) == GLFW_PRESS) fish2Pos.y += 0.007f;
+        if (glfwGetKey(window, GLFW_KEY_L) == GLFW_PRESS) fish2Pos.y -= 0.007f;
 
         fish1Pos = glm::clamp(fish1Pos, glm::vec3(-0.85f, -0.8f, -0.85f), glm::vec3(0.85f, 0.8f, 0.85f));
         fish2Pos = glm::clamp(fish2Pos, glm::vec3(-0.85f, -0.8f, -0.85f), glm::vec3(0.85f, 0.8f, 0.85f));
@@ -218,13 +322,13 @@ int main()
         if (chestOpen && chest_lid_angle < 120.0f) chest_lid_angle += 1.5f;
         else if (!chestOpen && chest_lid_angle > 0.0f) chest_lid_angle -= 1.5f;
 
-        for (auto& b : bubbles) {
-            b.pos.y += b.speed;
-            if (b.pos.y > 0.95f) {
-                b.pos.y = -0.95f;
-                b.pos.x = ((rand() % 100) / 100.0f - 0.5f) * 1.8f;
-                b.pos.z = ((rand() % 100) / 100.0f - 0.5f) * 1.8f;
-            }
+        for (auto it = bubbles.begin(); it != bubbles.end(); )
+        {
+            it->pos.y += it->speed;
+            if (it->pos.y > 0.95f)
+                it = bubbles.erase(it);
+            else
+                ++it;
         }
 
         frameCounter++;
@@ -233,9 +337,7 @@ int main()
         for (auto it = foodPositions.begin(); it != foodPositions.end();) {
             if (it->y > -0.85f)
             {
-                it->y -= 0.0003f;
-
-                // Clamp na pod (da ne propadne ispod)
+                it->y -= 0.007f;
                 if (it->y < -0.85f)
                     it->y = -0.85f;
             }
@@ -254,6 +356,12 @@ int main()
         glBindTexture(GL_TEXTURE_2D, sandTexture);
         shader.setInt("uUseTexture", 1);
         glm::mat4 model = glm::scale(glm::translate(glm::mat4(1), glm::vec3(0, -1, 0)), glm::vec3(2, 1, 2));
+        model = glm::mat4(1);
+        model = glm::translate(model, glm::vec3(0, -1, 0));
+        model = glm::scale(model, glm::vec3(2, 1, 2));
+        //model = glm::rotate(model, glm::radians(0.8f * sin(glfwGetTime())), glm::vec3(1, 0, 0));
+        shader.setMat4("uM", model);
+
         shader.setMat4("uM", model);
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
 
@@ -273,7 +381,7 @@ int main()
             glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
         }
 
-        // Chest with wood texture
+        // Chest
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, woodTexture);
         shader.setInt("uUseTexture", 1);
@@ -294,39 +402,61 @@ int main()
         shader.setInt("uUseTexture", 0);
 
         // Treasure
+        float treasureStrength = 0.0f;
         if (chestOpen) {
             glBindVertexArray(sphereVAO);
             shader.setVec3("uObjectColor", 1.0f, 0.84f, 0.0f);
             model = glm::scale(glm::translate(glm::mat4(1), glm::vec3(0.6f, -0.7f, 0.5f)), glm::vec3(0.08f));
             shader.setMat4("uM", model);
             glDrawElements(GL_TRIANGLES, 20 * 20 * 6, GL_UNSIGNED_INT, 0);
+            treasureStrength = (chest_lid_angle / 120.0f) * 0.6f;
         }
 
-        // Algae
-        glBindVertexArray(cubeVAO);
-        shader.setVec3("uObjectColor", 0.1f, 0.6f, 0.2f);
+        float treasureIntensity = chestOpen ? (chest_lid_angle / 120.0f) * 0.5f : 0.0f;
+        glm::vec3 treasureLightPos(0.6f, -0.7f, 0.5f);
+        shader.setVec3("uTreasureLightPos", treasureLightPos);
+        shader.setVec3("uTreasureLightColor", treasureIntensity * 1.0f, treasureIntensity * 0.84f, treasureIntensity * 0.3f);
+        shader.setFloat("uTreasureLightStrength", treasureStrength);
+
+
+        shader.setInt("uUseTexture", 1);
         for (const auto& pos : algaePositions) {
-            model = glm::scale(glm::translate(glm::mat4(1), pos), glm::vec3(0.04f, 0.25f, 0.04f));
+            model = glm::mat4(1);
+            model = glm::translate(model, pos);
+            model = glm::scale(model, glm::vec3(0.08f));
             shader.setMat4("uM", model);
-            glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
+            grass.Draw(shader);
         }
+
+        shader.setInt("uUseTexture", 0);
 
         // Food
-        shader.setVec3("uObjectColor", 0.9f, 0.7f, 0.3f);
-        for (const auto& pos : foodPositions) {
-            model = glm::scale(glm::translate(glm::mat4(1), pos), glm::vec3(0.03f));
-            shader.setMat4("uM", model);
-            glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
-        }
-
-        // Fish
         shader.setInt("uUseTexture", 1);
-        model = glm::rotate(glm::translate(glm::mat4(1), fish1Pos), glm::radians(fish1RotY), glm::vec3(0, 1, 0));
+        for (const auto& pos : foodPositions) {
+            model = glm::mat4(1);
+            model = glm::translate(model, pos);
+            model = glm::scale(model, glm::vec3(0.008f));  
+            shader.setMat4("uM", model);
+            pineapple.Draw(shader);
+        }
+        shader.setInt("uUseTexture", 0);
+        shader.setVec3("uObjectColor", 1.0f, 1.0f, 1.0f);
+        shader.setFloat("uAlpha", 1.0f);
+        //glBindTexture(GL_TEXTURE_2D, 0);
+
+        // Fishes
+
+        shader.setInt("uUseTexture", 1);
+        model = glm::translate(glm::mat4(1), fish1Pos);
+        model = glm::rotate(model, glm::radians(fish1RotY - 90.0f), glm::vec3(0, 1, 0));
+        model = glm::rotate(model, glm::radians(90.0f), glm::vec3(0, 0, 1));
         model = glm::scale(model, glm::vec3(0.015f));
         shader.setMat4("uM", model);
         clown.Draw(shader);
 
-        model = glm::rotate(glm::translate(glm::mat4(1), fish2Pos), glm::radians(fish2RotY), glm::vec3(0, 1, 0));
+        model = glm::translate(glm::mat4(1), fish2Pos);
+        model = glm::rotate(model, glm::radians(fish2RotY + 90.0f), glm::vec3(0, 1, 0));
+        model = glm::rotate(model, glm::radians(90.0f), glm::vec3(0, 0, 1));
         model = glm::scale(model, glm::vec3(0.015f));
         shader.setMat4("uM", model);
         puffer.Draw(shader);
@@ -359,6 +489,15 @@ int main()
         shader.setMat4("uM", model);
         glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
 
+        glDisable(GL_DEPTH_TEST);
+        glUseProgram(overlayShader);
+        glBindVertexArray(quadVAO);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, signatureTexture);
+        glUniform1i(glGetUniformLocation(overlayShader, "uTexture"), 0);
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+        if (depthTestEnabled) glEnable(GL_DEPTH_TEST);
+
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
@@ -368,6 +507,12 @@ int main()
     glDeleteVertexArrays(1, &planeVAO);
     glDeleteTextures(1, &sandTexture);
     glDeleteTextures(1, &woodTexture);
-    glfwTerminate();
+    glDeleteTextures(1, &signatureTexture);
+    glfwTerminate();float vertices[] = {
+    -1.0f,  1.0f,     1.0f, 1.0f,
+    -1.0f,  0.5f,     1.0f, 0.0f,
+    -0.7f,  0.5f,     0.0f, 0.0f,
+    -0.7f,  1.0f,     0.0f, 1.0f
+    };
     return 0;
 }
