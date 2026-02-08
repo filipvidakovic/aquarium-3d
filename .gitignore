@@ -79,6 +79,10 @@ StyleCopReport.xml
 *.ilk
 *.meta
 *.obj
+!clown-fish.obj
+!puffer-fish.obj
+!clown-fish.mtl
+!clown-fish.mtl
 *.iobj
 *.pch
 *.pdb
